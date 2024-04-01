@@ -14,6 +14,7 @@ const BACKGROUND_COLOR: Color = Color::rgb(0.1, 0.1, 0.1);
 fn main() {
     App::new()
         .add_event::<CageCollisionEvent>()
+        .add_event::<OtherCollisionEvent>()
         .add_systems(Startup, setup)
         .add_systems(
             FixedUpdate,
@@ -45,8 +46,19 @@ struct Gravity(f32);
 #[derive(Component)]
 struct Collision;
 
-#[derive(Event, Default)]
-struct CageCollisionEvent;
+#[derive(Event)]
+struct CageCollisionEvent {
+    #[allow(dead_code)]
+    entity: Entity,
+}
+
+#[derive(Event)]
+struct OtherCollisionEvent {
+    #[allow(dead_code)]
+    self_entity: Entity,
+    #[allow(dead_code)]
+    other_entity: Entity,
+}
 
 #[derive(Resource)]
 struct CollisionSound(Handle<AudioSource>);
@@ -136,10 +148,10 @@ fn apply_gravity(mut query: Query<(&mut Velocity, &Gravity)>, time: Res<Time>) {
 }
 
 fn collide_cage(
-    mut ball_query: Query<(&mut Transform, &mut Velocity, &Collision)>,
+    mut ball_query: Query<(Entity, &mut Transform, &mut Velocity, &Collision)>,
     mut collision_events: EventWriter<CageCollisionEvent>,
 ) {
-    for (mut ball_transform, mut ball_velocity, _) in &mut ball_query {
+    for (entity, mut ball_transform, mut ball_velocity, _) in &mut ball_query {
         let mut ball_position = ball_transform.translation.truncate();
         let ball_radius = BALL_RADIUS;
 
@@ -158,14 +170,14 @@ fn collide_cage(
             ball_position += overlap * normal;
             ball_transform.translation = ball_position.extend(ball_transform.translation.z);
 
-            collision_events.send(CageCollisionEvent);
+            collision_events.send(CageCollisionEvent { entity });
         }
     }
 }
 
 fn collide_others(
     mut ball_query: Query<(Entity, &mut Transform, &mut Velocity, &Collision), With<Ball>>,
-    mut commands: Commands,
+    mut collision_events: EventWriter<OtherCollisionEvent>,
 ) {
     let ball_positions: Vec<(Entity, Vec2)> = ball_query
         .iter()
@@ -191,8 +203,11 @@ fn collide_others(
 
                 let overlap = (ball_radius / 2.) + (other_radius / 2.) - distance;
                 ball_transform.translation -= overlap * normal.extend(0.0);
-                // Delete both balls
-                commands.entity(entity).despawn();
+
+                collision_events.send(OtherCollisionEvent {
+                    self_entity: entity,
+                    other_entity: *other_entity,
+                });
             }
         }
     }
@@ -206,30 +221,50 @@ fn maybe_spawn_ball(
 ) {
     if !collision_events.is_empty() {
         collision_events.clear();
-        // if rand::random::<f32>() < 0.5 {
-        spawn_ball(&mut commands, &mut materials, &mut meshes);
-        // }
+        if (rand::random::<f32>() * 100.0) < 10.0 {
+            spawn_ball(&mut commands, &mut materials, &mut meshes);
+        }
     }
+}
+
+// fn remove_colliding_balls(
+//     mut commands: Commands,
+//     mut collision_events: EventReader<OtherCollisionEvent>,
+// ) {
+//     if !collision_events.is_empty() {
+//         collision_events.read().for_each(|event| {
+//             commands.entity(event.self_entity).despawn();
+//         });
+//     }
+// }
+
+fn play_sound(commands: &mut Commands, sound: &Res<CollisionSound>) {
+    commands.spawn(AudioBundle {
+        source: sound.0.clone(),
+        // auto-despawn the entity when playback finishes
+        settings: PlaybackSettings::DESPAWN,
+    });
 }
 
 fn play_collision_sound(
     mut commands: Commands,
-    mut collision_events: EventReader<CageCollisionEvent>,
+    mut wall_collision_events: EventReader<CageCollisionEvent>,
+    mut ball_collision_events: EventReader<OtherCollisionEvent>,
     sound: Res<CollisionSound>,
 ) {
     // Play a sound once per frame if a collision occurred.
-    if !collision_events.is_empty() {
+    if !wall_collision_events.is_empty() {
         // This prevents events staying active on the next frame.
-        collision_events.clear();
-        commands.spawn(AudioBundle {
-            source: sound.0.clone(),
-            // auto-despawn the entity when playback finishes
-            settings: PlaybackSettings::DESPAWN,
-        });
+        wall_collision_events.clear();
+        play_sound(&mut commands, &sound);
+    }
+
+    if !ball_collision_events.is_empty() {
+        ball_collision_events.clear();
+        play_sound(&mut commands, &sound);
     }
 }
 
-// trigger setup when you press space
 fn spawn_ball_on_space(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     query: Query<Entity, With<Ball>>,
